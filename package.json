@@ -1,0 +1,62 @@
+{
+  "name": "mail-header-analyzer",
+  "version": "0.1.0",
+  "description": "Offline email header analysis: Received chain, SPF/DKIM/DMARC/ARC, trust of Authentication-Results, Exchange Online headers and anomalies. Zero dependencies, Node and browser.",
+  "keywords": [
+    "email",
+    "email-headers",
+    "header-analyzer",
+    "received",
+    "spf",
+    "dkim",
+    "dmarc",
+    "arc",
+    "authentication-results",
+    "exchange-online",
+    "microsoft-365",
+    "phishing",
+    "security",
+    "cli"
+  ],
+  "homepage": "https://rafaelpfister.ch/en/tools/header-analyzer",
+  "bugs": {
+    "url": "https://github.com/pfstr/mail-header-analyzer/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pfstr/mail-header-analyzer.git"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Rafael Pfister",
+    "url": "https://rafaelpfister.ch"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "mail-header-analyzer": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --experimental-strip-types --test \"test/**/*.test.ts\"",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
