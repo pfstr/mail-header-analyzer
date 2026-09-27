@@ -36,7 +36,12 @@ test("W1A-03: alle fuenf Stellen bleiben bei 100 000 Zeichen unter der Schwelle"
 });
 
 test("W1A-03: der Aufwand waechst linear, nicht quadratisch", () => {
-  const messe = (n: number) => dauer(() => parseAddr("<" + "@".repeat(n)));
+  // Kleinster Wert aus mehreren Läufen: eine einzelne Messung im
+  // Zehntelmillisekunden-Bereich kippt schon durch eine GC-Pause.
+  const messe = (n: number) => {
+    const eingabe = "<" + "@".repeat(n);
+    return Math.min(...Array.from({ length: 7 }, () => dauer(() => parseAddr(eingabe))));
+  };
   messe(50_000); // aufwaermen
   const klein = Math.max(messe(50_000), 0.05);
   const gross = messe(200_000);
