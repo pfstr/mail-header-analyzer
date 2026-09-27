@@ -68,7 +68,7 @@ console.log(summary.findings);          // [{ code: "auth-results-unverified", d
 | Authentication-Results | RFC 8601 parsing with a trust level per line: `trusted` (authserv-id of your gateway, via `trustedAuthServIds`), `matched` (matches a Received host, plausible only, since Received can be forged), `unmatched`, `absent`. A forged line inserted by the sender is reported instead of trusted |
 | SPF / DKIM / DMARC / ARC | Results, DKIM signature to result mapping, ARC chain structure (RFC 8617, no signature verification; the cryptographic verdict is the receiver's `arc=`), alignment helpers |
 | Microsoft 365 | `compauth`, Exchange Online headers, Forefront antispam fields |
-| Anomalies | Unicode bidi controls (`invoice‮fdp.exe`), duplicated singleton fields (RFC 5322 §3.6), hop limit |
+| Anomalies | Unicode bidi controls (`invoice<U+202E>fdp.exe`), duplicated singleton fields (RFC 5322 §3.6), hop limit |
 
 ### Finding codes
 
