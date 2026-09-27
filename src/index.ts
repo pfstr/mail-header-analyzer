@@ -4,21 +4,29 @@
  * `analyze()` liefert die vollständige Auswertung, `summarize()` eine
  * kompakte, JSON-taugliche Zusammenfassung mit Befunden.
  */
-import { analyzeHeaders, splitHeaders, type Analysis } from "./parse.ts";
+import { analyzeHeaders, splitHeaders, type Analysis, type AnalyzeOptions } from "./parse.ts";
 
 export * from "./parse.ts";
 export { detectProvider } from "./providers.ts";
 
-/** Rohen Header-Text (oder eine ganze .eml-Datei) zerlegen und auswerten. */
-export function analyze(raw: string): Analysis {
+/**
+ * Rohen Header-Text (oder eine ganze .eml-Datei) zerlegen und auswerten.
+ * `trustedAuthServIds`: authserv-ids des eigenen Eingangs-Gateways; nur deren
+ * Authentication-Results gelten als belegt.
+ */
+export function analyze(raw: string, opts: AnalyzeOptions = {}): Analysis {
   const { fields, hadBody } = splitHeaders(raw);
-  return analyzeHeaders(fields, hadBody);
+  return analyzeHeaders(fields, hadBody, opts);
 }
 
 export type FindingCode =
   | "bidi-controls"
   | "duplicate-singleton-field"
   | "auth-results-unverified"
+  | "auth-results-plausible-only"
+  | "auth-results-not-trusted"
+  | "auth-results-trusted-conflict"
+  | "arc-structure-inconsistent"
   | "auth-results-mixed-origins"
   | "received-spf-unverified"
   | "clock-skew"
@@ -43,9 +51,10 @@ export type Summary = {
     dmarc: string | null;
     arc: string | null;
     compauth: string | null;
-    source: "matched" | "unmatched" | "absent" | "none";
+    source: "trusted" | "matched" | "unmatched" | "absent" | "none";
   };
-  arcChainValid: boolean | null;
+  /** Nur der Aufbau der ARC-Kette, keine Signaturprüfung. */
+  arcStructure: "consistent" | "inconsistent" | null;
   hops: Array<{
     n: number;
     from: string | null;
@@ -77,6 +86,24 @@ export function summarize(a: Analysis): Summary {
       code: "auth-results-unverified",
       detail: `authserv-id ${a.authoritative?.authserv ?? "?"} does not match any receiving host`,
     });
+  }
+  if (a.authTrust === "matched" && !a.trustedIds.length) {
+    findings.push({
+      code: "auth-results-plausible-only",
+      detail: "authserv-id matches a Received host, but Received fields can be forged; pass trustedAuthServIds to verify",
+    });
+  }
+  if (a.trustedIds.length && a.authTrust !== "trusted") {
+    findings.push({ code: "auth-results-not-trusted", detail: `No Authentication-Results from ${a.trustedIds.join(", ")}` });
+  }
+  if (a.trustedConflicts.length) {
+    findings.push({
+      code: "auth-results-trusted-conflict",
+      detail: `Conflicting results with a trusted authserv-id for: ${a.trustedConflicts.join(", ")}`,
+    });
+  }
+  if (a.arcStructure === "inconsistent") {
+    findings.push({ code: "arc-structure-inconsistent", detail: `${a.arcIssues.length} structural ARC issue(s)` });
   }
   if (a.authMixedOrigins) {
     findings.push({ code: "auth-results-mixed-origins", detail: "Authentication-Results from several systems" });
@@ -113,7 +140,7 @@ export function summarize(a: Analysis): Summary {
       compauth: a.summary.compauth?.result ?? null,
       source: a.authTrust,
     },
-    arcChainValid: a.arcValid,
+    arcStructure: a.arcStructure,
     hops: a.hops.map((h) => ({
       n: h.n,
       from: h.rdns ?? h.fromHost,

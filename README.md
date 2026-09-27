@@ -22,6 +22,10 @@ npx mail-header-analyzer message.eml
 pbpaste | npx mail-header-analyzer --json
 ```
 
+```bash
+npx mail-header-analyzer message.eml --trusted-authserv mx.contoso.com
+```
+
 Example output:
 
 ```text
@@ -44,7 +48,9 @@ Findings      none
 ```js
 import { analyze, summarize } from "mail-header-analyzer";
 
-const analysis = analyze(rawHeaders);   // full result
+const analysis = analyze(rawHeaders, {
+  trustedAuthServIds: ["mx.contoso.com"], // optional, your inbound gateway
+});                                       // full result
 const summary = summarize(analysis);    // compact, JSON-friendly
 
 console.log(summary.auth.dmarc);        // "pass"
@@ -59,14 +65,16 @@ console.log(summary.findings);          // [{ code: "auth-results-unverified", d
 |---|---|
 | Received chain | Hops in chronological order, IP, rDNS, HELO, TLS version and cipher, delay per hop, clock skew, known gateways and providers |
 | Trust boundary | Only the topmost Received field is written by the receiving system. It is marked `attested`; everything below is an unverified claim of the sender |
-| Authentication-Results | RFC 8601 parsing. The `authserv-id` is matched against the receiving hosts, so a forged `Authentication-Results` line inserted by the sender is reported instead of trusted |
-| SPF / DKIM / DMARC / ARC | Results, DKIM signature to result mapping, ARC chain validity, alignment helpers |
+| Authentication-Results | RFC 8601 parsing with a trust level per line: `trusted` (authserv-id of your gateway, via `trustedAuthServIds`), `matched` (matches a Received host, plausible only, since Received can be forged), `unmatched`, `absent`. A forged line inserted by the sender is reported instead of trusted |
+| SPF / DKIM / DMARC / ARC | Results, DKIM signature to result mapping, ARC chain structure (RFC 8617, no signature verification; the cryptographic verdict is the receiver's `arc=`), alignment helpers |
 | Microsoft 365 | `compauth`, Exchange Online headers, Forefront antispam fields |
 | Anomalies | Unicode bidi controls (`invoice‮fdp.exe`), duplicated singleton fields (RFC 5322 §3.6), hop limit |
 
 ### Finding codes
 
-`bidi-controls`, `duplicate-singleton-field`, `auth-results-unverified`, `auth-results-mixed-origins`, `received-spf-unverified`, `clock-skew`, `hop-limit-exceeded`, `reply-to-differs`, `dmarc-not-pass`
+`bidi-controls`, `duplicate-singleton-field`, `auth-results-unverified`, `auth-results-plausible-only`, `auth-results-not-trusted`, `auth-results-trusted-conflict`, `auth-results-mixed-origins`, `received-spf-unverified`, `arc-structure-inconsistent`, `clock-skew`, `hop-limit-exceeded`, `reply-to-differs`, `dmarc-not-pass`
+
+Microsoft 365 writes `Authentication-Results` without an authserv-id; leave `trustedAuthServIds` empty there.
 
 ## Background articles
 

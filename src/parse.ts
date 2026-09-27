@@ -386,13 +386,17 @@ export type AuthMethod = {
   comments: string[];
 };
 /**
- * Herkunft einer Prüfzeile, bezogen auf die Zustellkette:
- * `matched`   die authserv-id kommt als `by`-Host in der Received-Kette vor,
- * `unmatched` sie kommt dort nicht vor (der Absender kann die Zeile selbst
- *             geschrieben haben, RFC 8601 §5),
+ * Herkunft einer Prüfzeile:
+ * `trusted`   die authserv-id ist eine, die der Nutzer als die seines
+ *             Eingangs-Gateways angegeben hat (RFC 8601 §5). Belastbar nur,
+ *             wenn das Gateway fremde Zeilen mit dieser ID entfernt,
+ * `matched`   die authserv-id kommt als `by`-Host in der Received-Kette vor.
+ *             Nur plausibel: eine Fälschung kann die passende Received-Zeile
+ *             gleich mitliefern,
+ * `unmatched` weder noch (der Absender kann die Zeile selbst geschrieben haben),
  * `absent`    die Zeile trägt keine authserv-id (bei Microsoft 365 üblich).
  */
-export type AuthTrust = "matched" | "unmatched" | "absent";
+export type AuthTrust = "trusted" | "matched" | "unmatched" | "absent";
 
 export type AuthResults = {
   authserv: string | null;
@@ -437,14 +441,25 @@ export function parseAuthResults(field: HeaderField): AuthResults {
 }
 
 /**
- * Stammt eine Prüfzeile vom empfangenden System? Massgeblich ist allein die
- * Zeile der empfangenden Organisation (RFC 8601 §5): deren authserv-id muss
- * einer Station der Zustellkette entsprechen. Findet sich keine, ist die
- * Zeile eine unbelegte Behauptung.
+ * Herkunft einer Prüfzeile einstufen. Massgeblich ist allein die Zeile, deren
+ * authserv-id die empfangende Organisation als eigene kennt (RFC 8601 §5);
+ * vertrauenswürdige IDs werden exakt verglichen. Der Abgleich mit der
+ * Zustellkette ist nur eine Plausibilitätsprüfung, weil sich Received-Zeilen
+ * genauso fälschen lassen wie die Prüfzeile selbst.
  */
-export function classifyAuthTrust(authserv: string | null, byHosts: string[]): AuthTrust {
+export function classifyAuthTrust(authserv: string | null, byHosts: string[], trustedIds: string[] = []): AuthTrust {
   if (!normDomain(authserv)) return "absent";
+  if (trustedIds.some((t) => sameDomain(authserv, t))) return "trusted";
   return byHosts.some((h) => hostMatches(authserv, h)) ? "matched" : "unmatched";
+}
+
+/**
+ * Freitext mit einer oder mehreren authserv-ids (Komma, Semikolon oder
+ * Leerraum getrennt) in normalisierte IDs zerlegen.
+ */
+export function parseTrustedIds(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return [...new Set(text.split(/[\s,;]+/).map((t) => normDomain(t)).filter((t): t is string => !!t))];
 }
 
 export type ReceivedSpf = { result: string; props: Record<string, string>; comments: string[]; raw: string };
@@ -623,6 +638,30 @@ export function arcAttestsDkim(inst: ArcInstance, d: string | null | undefined):
     m.method === "dkim" && m.result === "pass" && sameDomain(m.props["header.d"], d));
 }
 
+/** Abweichung vom Aufbau einer ARC-Kette (RFC 8617), sprachneutral. */
+export type ArcIssue =
+  | { kind: "count"; i: number; header: "ARC-Seal" | "ARC-Message-Signature" | "ARC-Authentication-Results"; n: number }
+  | { kind: "cv"; i: number; cv: string | null; expected: "none" | "pass" }
+  | { kind: "limit"; n: number }
+  | { kind: "noInstance" };
+
+/** Höchste zulässige ARC-Instanz (RFC 8617). */
+export const MAX_ARC = 50;
+
+export type AnalyzeOptions = {
+  /** authserv-ids des eigenen Eingangs-Gateways; nur deren Zeilen sind belegt. */
+  trustedAuthServIds?: string[];
+};
+
+/**
+ * ARC-Instanzen, die eine DKIM-Signatur der Domain `d` bezeugen. Die Angaben
+ * in ARC-Authentication-Results sind Aussagen der jeweiligen Weiterleitung;
+ * sie zählen nur, wenn der Empfänger die Kette selbst geprüft hat (arc=pass).
+ */
+export function arcWitnesses(a: Pick<Analysis, "arc" | "summary">, d: string | null | undefined): ArcInstance[] {
+  if (a.summary.arc?.result !== "pass") return [];
+  return a.arc.filter((inst) => arcAttestsDkim(inst, d));
+}
 export type Analysis = {
   fields: HeaderField[];
   hadBody: boolean;
@@ -642,13 +681,26 @@ export type Analysis = {
   authTrust: AuthTrust | "none";
   /** Mehrere Prüfzeilen unterschiedlicher Herkunft im Header. */
   authMixedOrigins: boolean;
+  /** Die vom Nutzer angegebenen vertrauenswürdigen authserv-ids, normalisiert. */
+  trustedIds: string[];
+  /**
+   * Methoden, für die sich Zeilen mit vertrauenswürdiger ID widersprechen:
+   * mindestens eine stammt nicht vom Gateway, es entfernt fremde Zeilen nicht.
+   */
+  trustedConflicts: string[];
   receivedSpf: ReceivedSpf | null;
   receivedSpfTrust: AuthTrust | "none";
   /** Das SPF-Ergebnis stammt nur aus Received-SPF, nicht aus einer Prüfzeile. */
   spfFromReceivedSpf: boolean;
   dkimSigs: DkimSig[];
   arc: ArcInstance[];
-  arcValid: boolean | null;
+  /**
+   * Aufbau der ARC-Kette: Instanznummern, ein Header-Satz je Instanz,
+   * cv=-Folge. Keine Signaturprüfung; das kryptografische Urteil ist
+   * `summary.arc`, also das Ergebnis des Empfängers.
+   */
+  arcStructure: "consistent" | "inconsistent" | null;
+  arcIssues: ArcIssue[];
   summary: Record<"spf" | "dkim" | "dmarc" | "arc" | "compauth", AuthMethod | null>;
   from: Addr | null;
   replyTo: Addr | null;
@@ -677,7 +729,7 @@ const SINGLETON_FIELDS = ["From", "Sender", "Reply-To", "To", "Cc", "Bcc",
  */
 export const MAX_HOPS = 200;
 
-export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysis {
+export function analyzeHeaders(fields: HeaderField[], hadBody: boolean, opts: AnalyzeOptions = {}): Analysis {
   // Hops: im Header steht der letzte zuoberst; chronologisch ist umgekehrt.
   const received = all(fields, "Received");
   const hopOverflow = Math.max(0, received.length - MAX_HOPS);
@@ -710,16 +762,31 @@ export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysi
   const spfField = first(fields, "Received-SPF");
   const receivedSpf = spfField ? parseReceivedSpf(spfField) : null;
 
-  // Herkunft der Prüfzeilen gegen die Zustellkette abgleichen: eine Zeile,
-  // deren authserv-id nirgends als `by`-Host auftaucht, kann jeder schreiben.
+  // Herkunft der Prüfzeilen. Beleg ist nur eine authserv-id, die der Nutzer als
+  // die seines Gateways angibt; der Abgleich mit der Zustellkette ist bloss
+  // plausibel, weil der Absender die Received-Zeile gleich mitfälschen kann.
   const byHosts = hops.map((h) => normDomain(h.byHost)).filter((h): h is string => !!h);
   const deliveredBy = hops.length ? normDomain(hops[hops.length - 1].byHost) : null;
-  for (const set of ar) set.trust = classifyAuthTrust(set.authserv, byHosts);
+  const trustedIds = [...new Set((opts.trustedAuthServIds ?? []).map((t) => normDomain(t)).filter((t): t is string => !!t))];
+  for (const set of ar) set.trust = classifyAuthTrust(set.authserv, byHosts, trustedIds);
 
-  // Gibt es eine belegte Zeile, zählt ausschliesslich diese (RFC 8601 §5).
-  // Sonst bleibt es bei der bisherigen Reihenfolge, oberste zuerst.
-  const trusted = ar.filter((set) => set.trust === "matched");
-  const ranked = trusted.length ? trusted : ar;
+  // Die beste vorhandene Herkunftsstufe zählt, die übrigen Zeilen nicht
+  // (RFC 8601 §5). Innerhalb der Stufe gilt die Reihenfolge, oberste zuerst.
+  const bestLevel = (["trusted", "matched"] as const).find((lvl) => ar.some((set) => set.trust === lvl));
+  const ranked = bestLevel ? ar.filter((set) => set.trust === bestLevel) : ar;
+
+  // Widersprechen sich Zeilen mit vertrauenswürdiger ID, hat das Gateway eine
+  // fremde Zeile nicht entfernt. DKIM ausgenommen: mehrere Signaturen dürfen
+  // legitim unterschiedlich ausfallen.
+  const trustedResults = new Map<string, Set<string>>();
+  for (const set of ar.filter((x) => x.trust === "trusted")) {
+    for (const m of set.methods) {
+      if (!["spf", "dmarc", "arc", "compauth"].includes(m.method)) continue;
+      if (!trustedResults.has(m.method)) trustedResults.set(m.method, new Set());
+      trustedResults.get(m.method)!.add(m.result);
+    }
+  }
+  const trustedConflicts = [...trustedResults].filter(([, r]) => r.size > 1).map(([k]) => k);
   const summary: Analysis["summary"] = { spf: null, dkim: null, dmarc: null, arc: null, compauth: null };
   for (const set of ranked) {
     for (const m of set.methods) {
@@ -733,7 +800,7 @@ export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysi
     new Set(withMethods.map((set) => normDomain(set.authserv) ?? "")).size > 1;
 
   const receivedSpfTrust: AuthTrust | "none" = receivedSpf
-    ? classifyAuthTrust(receivedSpf.props.receiver ?? null, byHosts)
+    ? classifyAuthTrust(receivedSpf.props.receiver ?? null, byHosts, trustedIds)
     : "none";
   const spfFromReceivedSpf = !summary.spf && !!receivedSpf;
   if (spfFromReceivedSpf && receivedSpf) {
@@ -760,15 +827,23 @@ export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysi
     };
   });
 
-  // ARC-Kette aus den Seals gruppieren.
+  // ARC-Kette aus den Seals gruppieren. Geprüft wird nur der Aufbau
+  // (RFC 8617 §5.1.1), keine Signatur: das kryptografische Urteil ist das
+  // arc=-Ergebnis des Empfängers.
   const arcMap = new Map<number, ArcInstance>();
+  const arcCounts = new Map<string, number>();
+  const bump = (key: string) => arcCounts.set(key, (arcCounts.get(key) ?? 0) + 1);
+  const instOf = (t: Record<string, string>) => (/^\d+$/.test(t.i ?? "") ? parseInt(t.i, 10) : 0);
   for (const f of all(fields, "ARC-Seal")) {
     const t = parseTagList(f.value);
-    const i = parseInt(t.i ?? "0", 10);
+    const i = instOf(t);
+    bump(`ARC-Seal|${i}`);
     arcMap.set(i, { i, sealDomain: t.d ?? null, cv: t.cv?.toLowerCase() ?? null, aar: null, aarMethods: [] });
   }
+  for (const f of all(fields, "ARC-Message-Signature")) bump(`ARC-Message-Signature|${instOf(parseTagList(f.value))}`);
   for (const f of all(fields, "ARC-Authentication-Results")) {
     const i = parseInt(f.value.match(/^\s*i\s*=\s*(\d+)/)?.[1] ?? "0", 10);
+    bump(`ARC-Authentication-Results|${i}`);
     const inst = arcMap.get(i);
     if (inst) {
       inst.aar = f.value.replace(/^\s*i\s*=\s*\d+\s*;\s*/, "");
@@ -776,9 +851,24 @@ export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysi
     }
   }
   const arc = [...arcMap.values()].sort((a, b) => a.i - b.i);
-  const arcValid = arc.length
-    ? arc.every((a) => (a.i === 1 ? a.cv === "none" || a.cv === "pass" : a.cv === "pass"))
-    : null;
+  const arcIssues: ArcIssue[] = [];
+  let arcStructure: Analysis["arcStructure"] = null;
+  if (arcCounts.size) {
+    const top = Math.max(...[...arcCounts.keys()].map((k) => parseInt(k.split("|")[1], 10)));
+    if (top > MAX_ARC) arcIssues.push({ kind: "limit", n: top });
+    const headers = ["ARC-Seal", "ARC-Message-Signature", "ARC-Authentication-Results"] as const;
+    for (let i = 1; i <= Math.min(top, MAX_ARC); i++) {
+      for (const header of headers) {
+        const n = arcCounts.get(`${header}|${i}`) ?? 0;
+        if (n !== 1) arcIssues.push({ kind: "count", i, header, n });
+      }
+      const inst = arcMap.get(i);
+      const expected = i === 1 ? "none" : "pass";
+      if (inst && inst.cv !== expected) arcIssues.push({ kind: "cv", i, cv: inst.cv, expected });
+    }
+    if (headers.some((h) => arcCounts.has(`${h}|0`))) arcIssues.push({ kind: "noInstance" });
+    arcStructure = arcIssues.length ? "inconsistent" : "consistent";
+  }
 
   const fromField = first(fields, "From");
   const from = fromField ? parseAddr(fromField.value) : null;
@@ -794,9 +884,9 @@ export function analyzeHeaders(fields: HeaderField[], hadBody: boolean): Analysi
     fields, hadBody, hops, hopOverflow, totalSec, slowestIdx, hasSkew,
     ar, byHosts, deliveredBy, authoritative,
     authTrust: authoritative ? authoritative.trust : "none",
-    authMixedOrigins,
+    authMixedOrigins, trustedIds, trustedConflicts,
     receivedSpf, receivedSpfTrust, spfFromReceivedSpf,
-    dkimSigs, arc, arcValid, summary,
+    dkimSigs, arc, arcStructure, arcIssues, summary,
     from,
     replyTo: replyToField ? parseAddr(replyToField.value) : null,
     returnPath: returnPathField ? parseAddr(returnPathField.value) : null,

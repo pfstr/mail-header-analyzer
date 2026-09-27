@@ -38,3 +38,12 @@ test("summarize() meldet gefälschte Authentication-Results", () => {
   const s = summarize(analyze(fixture("f04-authresults-gefaelscht.eml")));
   assert.ok(s.findings.some((f) => f.code === "auth-results-unverified"));
 });
+
+test("summarize() mit trustedAuthServIds: belegte Quelle und Widerspruch", () => {
+  const ok = summarize(analyze(fixture("f04-authresults-echt.eml"), { trustedAuthServIds: ["mx.empfang.invalid"] }));
+  assert.equal(ok.auth.source, "trusted");
+  const miss = summarize(analyze(fixture("f04-authresults-echt.eml"), { trustedAuthServIds: ["empfang.invalid"] }));
+  assert.ok(miss.findings.some((f) => f.code === "auth-results-not-trusted"));
+  const plausible = summarize(analyze(fixture("f09-received-und-authresults-gefaelscht.eml")));
+  assert.ok(plausible.findings.some((f) => f.code === "auth-results-plausible-only"));
+});

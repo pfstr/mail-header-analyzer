@@ -6,14 +6,17 @@
 import { readFileSync } from "node:fs";
 import { analyze, summarize, type Summary } from "./index.ts";
 
-const HELP = `Usage: mail-header-analyzer [file] [--json]
+const HELP = `Usage: mail-header-analyzer [file] [--json] [--trusted-authserv <id>]
 
 Analyze email headers offline: Received chain, SPF/DKIM/DMARC/ARC,
 trust of Authentication-Results, and anomalies. Reads stdin if no file is given.
 
 Options:
-  --json     Print the summary as JSON
-  -h, --help Show this help
+  --json                     Print the summary as JSON
+  --trusted-authserv <id>    authserv-id of your inbound gateway; only its
+                             Authentication-Results count as verified
+                             (repeatable or comma-separated)
+  -h, --help                 Show this help
 
 Browser version (runs locally, no upload):
   https://rafaelpfister.ch/en/tools/header-analyzer
@@ -58,9 +61,16 @@ if (args.includes("-h") || args.includes("--help")) {
   process.stdout.write(HELP);
   process.exit(0);
 }
-const file = args.find((x) => !x.startsWith("-"));
+const trusted: string[] = [];
+let file: string | undefined;
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (arg === "--trusted-authserv") trusted.push(...(args[++i] ?? "").split(","));
+  else if (arg.startsWith("--trusted-authserv=")) trusted.push(...arg.slice(19).split(","));
+  else if (!arg.startsWith("-") && file === undefined) file = arg;
+}
 try {
-  const summary = summarize(analyze(readInput(file)));
+  const summary = summarize(analyze(readInput(file), { trustedAuthServIds: trusted.filter(Boolean) }));
   process.stdout.write((args.includes("--json") ? JSON.stringify(summary, null, 2) : text(summary)) + "\n");
 } catch (err) {
   process.stderr.write(`mail-header-analyzer: ${(err as Error).message}\n`);

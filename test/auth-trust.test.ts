@@ -1,5 +1,5 @@
 /**
- * F-04 (TS-2.B1 und TS-2.B3): Prüfergebnisse gelten nur, wenn die
+ * F-04 (TS-2.B1 und TS-2.B3): Prüfergebnisse gelten nur als plausibel, wenn die
  * authserv-id einer Station der Zustellkette entspricht (RFC 8601 §5).
  * Eine vorangestellte Zeile fremder Herkunft darf nie als bestätigt gelten.
  */
@@ -35,7 +35,7 @@ test("F-04: die belegte Zeile schlaegt die vorangestellte Faelschung", () => {
   assert.equal(a.authMixedOrigins, true, "zwei Herkuenfte muessen gemeldet werden");
 });
 
-test("F-04: passende authserv-id gilt als belegt", () => {
+test("F-04: passende authserv-id gilt als plausibel (matched, nicht trusted)", () => {
   const a = analyzeFixture("f04-authresults-echt.eml");
   assert.equal(a.authTrust, "matched");
   assert.equal(a.authMixedOrigins, false);
